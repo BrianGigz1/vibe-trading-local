@@ -61,6 +61,27 @@ def api_state() -> JSONResponse:
             "SELECT symbol, entry_date, exit_date, pnl, return_pct, edge, exit_reason "
             "FROM trades ORDER BY exit_date DESC LIMIT 12")
     ]
+    # Per-symbol breakdown. The TradingView panel can only ever show the one
+    # symbol its chart is on, so without this the other names in the watchlist
+    # are invisible even though they are all being collected.
+    by_symbol = [
+        {"symbol": r[0], "trades": r[1], "pnl": r[2], "avg_ret": r[3],
+         "avg_bh": r[4], "edge": r[5], "beat": r[6]}
+        for r in con.execute(
+            "SELECT symbol, COUNT(*), COALESCE(SUM(pnl),0), COALESCE(AVG(return_pct),0),"
+            " COALESCE(AVG(bh_return),0), COALESCE(AVG(edge),0),"
+            " COALESCE(AVG(CASE WHEN edge > 0 THEN 1.0 ELSE 0.0 END),0)"
+            " FROM trades WHERE mode != 'tv_paper'"
+            " GROUP BY symbol ORDER BY COALESCE(AVG(edge),0) DESC")
+    ]
+    cap = {c["symbol"]: c for c in gate.capture_by_symbol(con)}
+    for r in by_symbol:
+        c = cap.get(r["symbol"])
+        r["capture"] = c["capture"] if c else None
+        r["time_in_market"] = c["time_in_market"] if c else None
+        r["strategy_total"] = c["strategy"] if c else None
+        r["bh_total"] = c["buy_hold"] if c else None
+
     runs = [
         {"at": r[0], "symbols": r[1], "new": r[2], "total": r[3]}
         for r in con.execute(
@@ -96,6 +117,7 @@ def api_state() -> JSONResponse:
         },
         "tradingview": tv,
         "feed": {"status": feed[0], "detail": feed[1]},
+        "by_symbol": by_symbol,
         "recent": recent, "runs": runs, "syncs": syncs,
     })
 
@@ -142,7 +164,8 @@ footer{padding:10px 20px;color:var(--dim);font-size:11px;border-top:1px solid va
 <main>
   <div class="card"><h2>Graduation gate</h2><div id="gate"></div></div>
   <div class="card"><h2>Ledger</h2><div id="ledger"></div></div>
-  <div class="card"><h2>TradingView (live)</h2><div id="tv"></div></div>
+  <div class="card"><h2>TradingView (live &mdash; one chart, one symbol)</h2><div id="tv"></div></div>
+  <div class="card" style="grid-column:1/-1"><h2>All symbols &mdash; ledger breakdown</h2><div id="bysym"></div></div>
   <div class="card"><h2>Recent trades</h2><div class="scroll small" id="recent"></div></div>
   <div class="card"><h2>Collection runs</h2><div class="small" id="runs"></div></div>
   <div class="card"><h2>TradingView syncs</h2><div class="small" id="syncs"></div></div>
@@ -200,6 +223,37 @@ async function tick(){
   const f = d.feed;
   pill(feedPill, 'feed '+f.status,
        f.status==='AGREE'?'ok':(f.status==='DIVERGENT'?'bad':'warn'));
+
+  // per-symbol breakdown
+  const col = v => v>0?'var(--ok)':(v<0?'var(--bad)':'var(--dim)');
+  const pctOrDash = v => v==null ? '<span class="sub">—</span>' : (v*100).toFixed(1)+'%';
+  bysym.innerHTML =
+    '<table><tr><td class="k">symbol</td><td class="k">n</td>'+
+    '<td class="k" title="per-trade return minus buy &amp; hold over the same window">edge</td>'+
+    '<td class="k">beat</td>'+
+    '<td class="k" title="compounded strategy return over the full span">strat</td>'+
+    '<td class="k" title="holding the asset for the whole span">buy&amp;hold</td>'+
+    '<td class="k" title="strategy / buy&amp;hold — CRITERION 5">capture</td>'+
+    '<td class="k" title="fraction of the span actually invested">in mkt</td>'+
+    '<td class="k">P&amp;L</td></tr>'+
+    d.by_symbol.map(r=>{
+      const capCol = r.capture==null?'var(--dim)':(r.capture>=1?'var(--ok)':'var(--bad)');
+      return `<tr><td><b>${r.symbol}</b></td><td>${r.trades}</td>`+
+      `<td style="color:${col(r.edge)}"><b>${(r.edge*100).toFixed(2)}%</b></td>`+
+      `<td>${(r.beat*100).toFixed(0)}%</td>`+
+      `<td class="sub">${pctOrDash(r.strategy_total)}</td>`+
+      `<td class="sub">${pctOrDash(r.bh_total)}</td>`+
+      `<td style="color:${capCol}"><b>${pctOrDash(r.capture)}</b></td>`+
+      `<td class="sub">${pctOrDash(r.time_in_market)}</td>`+
+      `<td style="color:${col(r.pnl)}">${num(r.pnl)}</td></tr>`;}).join('')+
+    '</table><div class="sub" style="margin-top:10px;line-height:1.6">'+
+    '<b>Read this table left to right.</b> <b>edge</b> is positive almost everywhere — '+
+    'the entries beat the asset <i>during the windows held</i>. '+
+    '<b>capture</b> is near zero anyway, because <b>in mkt</b> is small: the edge is '+
+    'earned on a fraction of the span while drift is forgone on the rest. '+
+    'That gap — not bad entries — is why criterion 5 fails. '+
+    '<b>P&amp;L is the market, not the decision</b>: the best P&amp;L here often sits '+
+    'beside the worst edge.</div>';
 
   recent.innerHTML = '<table>'+d.recent.map(r=>
     `<tr><td class="k">${r.symbol} <span class="sub">${r.exit}</span></td>`+

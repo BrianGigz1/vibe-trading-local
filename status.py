@@ -43,6 +43,74 @@ MIN_SYMBOLS = 5
 FEED_TOLERANCE = 0.02
 
 
+_CAPTURE_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
+CAPTURE_TTL = 900.0     # seconds; price data does not move fast enough to refetch
+
+
+def capture_by_symbol(con: sqlite3.Connection, ttl: float = CAPTURE_TTL) -> list[dict]:
+    """Per-symbol capture, time in market, and the drift decomposition.
+
+    This is the session's central finding made explicit:
+
+        capture ~= time_in_market x (drift while held / drift overall)
+
+    A symbol can show a positive per-trade edge and near-zero capture at the same
+    time — the edge is earned only while invested, and the rest of the span is
+    spent in cash forgoing drift. Showing edge without capture invites exactly
+    the misreading that criterion 5 exists to prevent.
+
+    Cached: the dashboard polls every 5s and this loads price history.
+    """
+    import time as _t
+    if _CAPTURE_CACHE["data"] is not None and _t.time() - _CAPTURE_CACHE["at"] < ttl:
+        return _CAPTURE_CACHE["data"]
+
+    try:
+        from data import DataError, load_ohlcv
+    except ImportError:
+        return []
+
+    rows = con.execute(
+        "SELECT symbol, MIN(entry_date), MAX(exit_date), COUNT(*), COALESCE(SUM(hold_days),0) "
+        "FROM trades WHERE mode != 'tv_paper' GROUP BY symbol"
+    ).fetchall()
+
+    out: list[dict] = []
+    for sym, first, last, n, held in rows:
+        strat = 1.0
+        for (r,) in con.execute(
+            "SELECT return_pct FROM trades WHERE symbol=? AND mode!='tv_paper' "
+            "ORDER BY entry_date", (sym,)
+        ):
+            strat *= (1.0 + float(r))
+        strat -= 1.0
+
+        try:
+            df = load_ohlcv(sym, first, "", "1d")
+            span = df["close"].loc[first:last]
+            if len(span) < 2 or float(span.iloc[0]) <= 0:
+                continue
+            bh = float(span.iloc[-1]) / float(span.iloc[0]) - 1.0
+            span_days = max(1, len(span))
+        except (DataError, KeyError, ValueError):
+            continue
+
+        # held is in calendar days; span_days in trading bars. Convert roughly.
+        held_bars = float(held) * (5.0 / 7.0)
+        tim = min(1.0, held_bars / span_days)
+        out.append({
+            "symbol": sym, "trades": n,
+            "strategy": strat, "buy_hold": bh,
+            "capture": (strat / bh) if bh > 0 else 0.0,
+            "time_in_market": tim,
+        })
+
+    out.sort(key=lambda r: r["capture"], reverse=True)
+    _CAPTURE_CACHE["at"] = _t.time()
+    _CAPTURE_CACHE["data"] = out
+    return out
+
+
 def full_period_capture(con: sqlite3.Connection) -> float:
     """Strategy return as a fraction of buy-and-hold over the FULL window.
 
