@@ -226,7 +226,12 @@ def _run(con: sqlite3.Connection, args: argparse.Namespace) -> int:
     # the Obsidian note is append-only — without this guard a laptop rebooted
     # three times would write three identical summaries into the daily note.
     if args.once_per_day and not args.stats:
-        today = date.today().isoformat()
+        # run_at is stored in UTC, so the comparison must be UTC too. Using
+        # date.today() (local) broke for any logon between midnight and the UTC
+        # offset — in CEST that is 00:00-02:00, where the local date has rolled
+        # over but the UTC date has not, so the guard found nothing and the
+        # collector ran a second time, duplicating the Obsidian entry.
+        today = datetime.now(timezone.utc).date().isoformat()
         row = con.execute(
             "SELECT run_at FROM runs WHERE substr(run_at,1,10)=? ORDER BY id DESC LIMIT 1",
             (today,),

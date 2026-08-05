@@ -7,6 +7,15 @@ REM absent TradingView must never block the Python collection, and it is
 REM recorded as an explicit TV_UNAVAILABLE row rather than silently skipped.
 cd /d "%~dp0"
 
+REM Rotate the log before appending. Two scheduled runs a day append forever;
+REM without this the file grows unbounded and nothing ever truncates it.
+if exist "%~dp0collector.log" for %%A in ("%~dp0collector.log") do (
+  if %%~zA GTR 2097152 (
+    if exist "%~dp0collector.log.1" del "%~dp0collector.log.1"
+    move /y "%~dp0collector.log" "%~dp0collector.log.1" >nul
+  )
+)
+
 "%~dp0venv\Scripts\python.exe" "%~dp0collector.py" --once-per-day >> "%~dp0collector.log" 2>&1
 set COLLECTOR_RC=%ERRORLEVEL%
 

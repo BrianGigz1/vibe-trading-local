@@ -132,6 +132,25 @@ def load_ohlcv(
         try:
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
             df.to_parquet(cache)
+            _prune_cache()
         except Exception as exc:  # caching is best-effort only
             logger.warning("could not write cache: %s", exc)
     return df
+
+
+CACHE_MAX_FILES = 400
+
+
+def _prune_cache(limit: int = CACHE_MAX_FILES) -> None:
+    """Drop the oldest cache files once the directory grows past *limit*.
+
+    Each distinct (symbol, start, end, interval) makes a new file, so parameter
+    sweeps and multi-window studies accumulate them indefinitely. They are all
+    regenerable, so evicting the oldest is safe.
+    """
+    try:
+        files = sorted(CACHE_DIR.glob("*.parquet"), key=lambda p: p.stat().st_mtime)
+        for old in files[:-limit] if len(files) > limit else []:
+            old.unlink(missing_ok=True)
+    except OSError:
+        pass   # pruning is housekeeping; never let it break a data load
