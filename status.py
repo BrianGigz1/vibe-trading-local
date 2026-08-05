@@ -283,10 +283,14 @@ def main() -> int:
     args = ap.parse_args()
 
     con = init_db()
-    checks, extra = evaluate(con)
-    eligible = all(c.passed for c in checks)
-    feed = feed_crosscheck()
-    con.close()
+    try:
+        checks, extra = evaluate(con)
+        eligible = all(c.passed for c in checks)
+        feed = feed_crosscheck()
+    finally:
+        # evaluate() loads price data and can raise; without finally the handle
+        # leaked and the nightly run held it until process exit.
+        con.close()
 
     if not args.quiet:
         print(f"{'#':<3}{'criterion':<26}{'now':>12}{'target':>14}  result")

@@ -217,13 +217,15 @@ def main() -> int:
         return 0
 
     con = init_db()
-    n = insert(con, trades)
-    print(f"\ninserted {n} new ({len(trades) - n} already present)")
-    s = stats(con)
-    write_obsidian(s, n, len({t['symbol'] for t in trades}))
-    print(f"ledger now: {s['trades']} trades")
-    print(f"Obsidian  : {journal.journal_dir().name}")
-    con.close()
+    try:
+        n = insert(con, trades)
+        print(f"\ninserted {n} new ({len(trades) - n} already present)")
+        s = stats(con)
+        write_obsidian(s, n, len({t['symbol'] for t in trades}))
+        print(f"ledger now: {s['trades']} trades")
+        print(f"Obsidian  : {journal.journal_dir().name}")
+    finally:
+        con.close()
     return 0
 
 

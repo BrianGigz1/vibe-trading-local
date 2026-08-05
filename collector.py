@@ -36,9 +36,27 @@ WATCHLIST = ["AAPL", "MSFT", "NVDA", "SPY", "TSLA", "AMZN", "META", "GOOGL"]
 START = "2023-01-01"
 
 
+def connect_ro() -> sqlite3.Connection:
+    """Open the ledger for READING only — no schema work, no write lock.
+
+    `init_db` issues CREATE TABLE IF NOT EXISTS and commits, which takes a write
+    lock even when nothing changes. The dashboard polls every 5 seconds, so using
+    init_db there would contend with the collector's nightly writes. Readers must
+    use this instead.
+    """
+    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10.0)
+    con.execute("PRAGMA query_only = ON")
+    return con
+
+
 def init_db() -> sqlite3.Connection:
     """Open the ledger, creating the schema if needed."""
-    con = sqlite3.connect(DB)
+    con = sqlite3.connect(DB, timeout=30.0)
+    # WAL lets the dashboard read while the collector writes. Without it a poll
+    # landing on the 18:00 run raises "database is locked".
+    con.execute("PRAGMA journal_mode = WAL")
+    con.execute("PRAGMA busy_timeout = 30000")
+    con.execute("PRAGMA synchronous = NORMAL")
     con.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -192,7 +210,17 @@ def main() -> int:
     args = ap.parse_args()
 
     con = init_db()
+    try:
+        return _run(con, args)
+    finally:
+        # A raise inside collect() previously skipped con.close(), leaving the
+        # handle — and under the old journal mode, a lock — held until process
+        # exit. The next scheduled run would then contend with it.
+        con.close()
 
+
+def _run(con: sqlite3.Connection, args: argparse.Namespace) -> int:
+    """Collection body. The caller owns the connection and closes it."""
     # A logon trigger can fire several times a day (reboots, fast user switching,
     # waking from a missed schedule). The collection itself is idempotent, but
     # the Obsidian note is append-only — without this guard a laptop rebooted
@@ -205,7 +233,6 @@ def main() -> int:
         ).fetchone()
         if row:
             print(f"already collected today at {row[0]} — skipping")
-            con.close()
             return 0
     symbols = args.symbols or WATCHLIST
     new_trades = 0
@@ -245,7 +272,6 @@ def main() -> int:
     p = write_obsidian(s, new_trades, len(symbols))
     if p:
         print(f"\nObsidian: {p.name}")
-    con.close()
     return 0
 
 

@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
 import status as gate
-from collector import init_db, stats
+from collector import connect_ro, init_db, stats
 
 app = FastAPI(title="VTL dashboard")
 _started = time.time()
@@ -49,8 +49,25 @@ def tv_snapshot() -> dict[str, Any]:
 
 @app.get("/api/state")
 def api_state() -> JSONResponse:
-    """Everything the page needs, in one call."""
-    con = init_db()
+    """Everything the page needs, in one call.
+
+    Read-only connection, closed in a finally: a poll every 5 seconds must never
+    take a write lock or leak a handle if a query raises.
+    """
+    try:
+        con = connect_ro()
+    except sqlite3.Error:
+        # Ledger not created yet — build it once, then read.
+        init_db().close()
+        con = connect_ro()
+    try:
+        return _build_state(con)
+    finally:
+        con.close()
+
+
+def _build_state(con: sqlite3.Connection) -> JSONResponse:
+    """Assemble the payload from an open read-only connection."""
     s = stats(con)
 
     checks, extra = gate.evaluate(con)
@@ -93,7 +110,6 @@ def api_state() -> JSONResponse:
         for r in con.execute(
             "SELECT synced_at, status, symbol, study FROM tv_sync ORDER BY id DESC LIMIT 5")
     ]
-    con.close()
 
     tv = tv_snapshot()
     feed = gate.feed_crosscheck()
