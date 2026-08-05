@@ -20,3 +20,4 @@ sweep_results.json
 # Synthetic test fixtures — regenerable, 21 files of noise
 pit_fixture/
 collector.log
+dashboard.log
