@@ -80,9 +80,25 @@ READ_STUDIES = r"""
     if (!w) return {ok:false, why:'no chart widget'};
     var chart = w.value()._chartWidget;
     var srcs = chart.model().model().dataSources();
-    var out = {ok:true, symbol:null, resolution:null, studies:[]};
+    var out = {ok:true, symbol:null, resolution:null, close:null, bar_time:null, studies:[]};
     try { out.symbol = chart.model().mainSeries().symbolInfo().name; } catch(e){}
     try { out.resolution = chart.model().mainSeries().properties().interval.value(); } catch(e){}
+    // Last close straight from the price series. Taking it from a Pine
+    // scorecard would make the feed cross-check depend on whichever script
+    // happens to be attached; the series is always there.
+    try {
+      var ms = chart.model().mainSeries();
+      var d = ms.data ? ms.data() : null;
+      var bars = d && d.bars ? d.bars() : null;
+      var last = null;
+      if (bars && bars.last) { last = bars.last(); }
+      else if (bars && bars.size && bars.valueAt) { last = bars.valueAt(bars.size()-1); }
+      if (last) {
+        var v = last.value || last;
+        // Pine/TV bar arrays are [time, open, high, low, close, volume].
+        if (v && v.length >= 5) { out.bar_time = v[0]; out.close = v[4]; }
+      }
+    } catch(e){}
     for (var i=0;i<srcs.length;i++){
       var s = srcs[i];
       try {

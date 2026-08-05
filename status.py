@@ -166,33 +166,15 @@ def feed_crosscheck() -> tuple[str, str]:
         if not sym:
             return "SKIPPED", "TradingView reported no symbol"
 
-        vals = st["studies"][0].get("values") or {}
-        tv_bh = None
-        for k, v in vals.items():
-            if "buy" in k.lower() and "hold" in k.lower():
-                try:
-                    tv_bh = float(str(v).replace(",", ""))
-                except ValueError:
-                    pass
-        if tv_bh is None:
-            return "SKIPPED", f"no buy&hold value in the {sym} scorecard"
+        # Read from the price series, not a Pine scorecard — otherwise the check
+        # silently depends on whichever script happens to be attached.
+        tv_close = st.get("close")
+        if tv_close is None:
+            return "SKIPPED", f"{sym}: chart exposed no close price"
+        tv_close = float(tv_close)
 
-        # The scorecard's buy&hold equity is seeded at the chart's first bar, so
-        # it is not directly comparable to a windowed yfinance return. What IS
-        # comparable is the latest close.
         df = load_ohlcv(sym, "2024-01-01", "", "1d")
         yf_close = float(df["close"].iloc[-1])
-        tv_close = None
-        for k, v in vals.items():
-            if k.lower() in ("close", "price"):
-                try:
-                    tv_close = float(str(v).replace(",", ""))
-                except ValueError:
-                    pass
-        if tv_close is None:
-            return "PARTIAL", (f"{sym}: yfinance close {yf_close:.2f}; TradingView "
-                               f"exposes no close in the scorecard to compare")
-
         diff = abs(tv_close - yf_close) / yf_close
         if diff <= FEED_TOLERANCE:
             return "AGREE", f"{sym}: yf {yf_close:.2f} vs tv {tv_close:.2f} ({diff:.2%})"
