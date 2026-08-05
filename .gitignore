@@ -1,0 +1,15 @@
+# Environment
+venv/
+__pycache__/
+*.pyc
+
+# Cached market data — regenerable, and large
+.cache/
+
+# Collected paper-trading data. Tracked separately or backed up; not in git,
+# because it changes on every scheduled run and would swamp the history.
+paper_ledger.db
+sweep_results.json
+
+# Local secrets — the webhook passphrase lives in the environment, never here
+.env
