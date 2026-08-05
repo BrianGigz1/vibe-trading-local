@@ -13,7 +13,10 @@ set COLLECTOR_RC=%ERRORLEVEL%
 "%~dp0venv\Scripts\python.exe" "%~dp0tv_sync.py" >> "%~dp0collector.log" 2>&1
 set TVSYNC_RC=%ERRORLEVEL%
 
-echo [%DATE% %TIME%] collector=%COLLECTOR_RC% tv_sync=%TVSYNC_RC% >> "%~dp0collector.log"
+"%~dp0venv\Scripts\python.exe" "%~dp0status.py" >> "%~dp0collector.log" 2>&1
+set GATE_RC=%ERRORLEVEL%
+
+echo [%DATE% %TIME%] collector=%COLLECTOR_RC% tv_sync=%TVSYNC_RC% gate=%GATE_RC% >> "%~dp0collector.log"
 
 REM Only the collector's failure is a real failure.
 exit /b %COLLECTOR_RC%
