@@ -1,0 +1,24 @@
+collecting 8 symbols from 2023-01-01 (trail)
+  AAPL    10 trades  capture    3.3%
+  MSFT     7 trades  capture   -0.0%
+  NVDA     9 trades  capture    1.1%
+  SPY      6 trades  capture    3.2%
+  TSLA     9 trades  capture   -1.9%
+  AMZN     7 trades  capture   -0.8%
+  META     8 trades  capture   -1.0%
+  GOOGL    7 trades  capture    1.4%
+
+LEDGER                         value
+trades                            63
+new this run                       0
+cumulative P&L             14,436.51
+avg return / trade            1.56%
+avg buy & hold                0.83%
+avg EDGE                      0.72%
+win rate                      65.1%
+beat buy & hold               58.7%
+winner hold (d)                 26.3
+loser hold (d)                   8.4
+disposition ratio               0.32
+
+Obsidian: 2026-08-05.md
