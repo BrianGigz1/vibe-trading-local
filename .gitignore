@@ -16,3 +16,7 @@ sweep_results.json
 
 # Stray hook telemetry (hooks writing relative to the wrong CWD)
 .claude-flow/
+
+# Synthetic test fixtures — regenerable, 21 files of noise
+pit_fixture/
+collector.log
