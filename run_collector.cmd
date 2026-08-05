@@ -2,7 +2,7 @@
 REM Daily data collection: Python strategy first, then TradingView sync.
 REM
 REM tv_sync runs SECOND and its failure is non-fatal. TradingView needs the
-REM desktop app running with CDP, which cannot be guaranteed at 18:00 — but an
+REM desktop app running with CDP, which cannot be guaranteed at 18:00 ? but an
 REM absent TradingView must never block the Python collection, and it is
 REM recorded as an explicit TV_UNAVAILABLE row rather than silently skipped.
 cd /d "%~dp0"
