@@ -187,9 +187,26 @@ def main() -> int:
     ap.add_argument("--symbols", nargs="*", default=None)
     ap.add_argument("--fixed", action="store_true", help="fixed stop instead of trailing")
     ap.add_argument("--stats", action="store_true", help="report ledger only")
+    ap.add_argument("--once-per-day", action="store_true",
+                    help="exit quietly if a successful run already happened today")
     args = ap.parse_args()
 
     con = init_db()
+
+    # A logon trigger can fire several times a day (reboots, fast user switching,
+    # waking from a missed schedule). The collection itself is idempotent, but
+    # the Obsidian note is append-only — without this guard a laptop rebooted
+    # three times would write three identical summaries into the daily note.
+    if args.once_per_day and not args.stats:
+        today = date.today().isoformat()
+        row = con.execute(
+            "SELECT run_at FROM runs WHERE substr(run_at,1,10)=? ORDER BY id DESC LIMIT 1",
+            (today,),
+        ).fetchone()
+        if row:
+            print(f"already collected today at {row[0]} — skipping")
+            con.close()
+            return 0
     symbols = args.symbols or WATCHLIST
     new_trades = 0
 

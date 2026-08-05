@@ -7,7 +7,7 @@ REM absent TradingView must never block the Python collection, and it is
 REM recorded as an explicit TV_UNAVAILABLE row rather than silently skipped.
 cd /d "%~dp0"
 
-"%~dp0venv\Scripts\python.exe" "%~dp0collector.py" >> "%~dp0collector.log" 2>&1
+"%~dp0venv\Scripts\python.exe" "%~dp0collector.py" --once-per-day >> "%~dp0collector.log" 2>&1
 set COLLECTOR_RC=%ERRORLEVEL%
 
 "%~dp0venv\Scripts\python.exe" "%~dp0tv_sync.py" >> "%~dp0collector.log" 2>&1
