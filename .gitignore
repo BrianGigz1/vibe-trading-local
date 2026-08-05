@@ -13,3 +13,6 @@ sweep_results.json
 
 # Local secrets — the webhook passphrase lives in the environment, never here
 .env
+
+# Stray hook telemetry (hooks writing relative to the wrong CWD)
+.claude-flow/
