@@ -1,0 +1,167 @@
+//@version=6
+// VTL session strategy - with alerts for manual paper trading.
+//
+// This build exists because the MCP cannot place orders (verified three ways:
+// source grep, tool-schema enumeration, the server's own 84-tool list). So the
+// division of labour is: TradingView tells you when to act, you click, and the
+// Python side records and analyses what happened.
+//
+// The alert() payloads carry entry, stop and the position size that risk.py
+// would allow - everything needed to place the paper trade correctly without
+// recomputing anything by hand.
+//
+// P&L reporting: every alert that involves money states it three ways -
+// percent, USD and EUR. The account is USD-denominated, so EUR is a display
+// conversion via FX_IDC:EURUSD and is omitted (never zeroed) when that feed is
+// unavailable. A missing number is recoverable; a wrong one is not.
+strategy("VTL session strategy",
+     overlay                 = true,
+     initial_capital         = 100000,
+     commission_type         = strategy.commission.percent,
+     commission_value        = 0.03,
+     slippage                = 1,
+     calc_on_every_tick      = false)
+
+useTrail  = input.bool(true,  "Breakeven + ATR trail")
+fastLen   = input.int(20,   "Fast SMA", minval = 2)
+slowLen   = input.int(50,   "Slow SMA", minval = 3)
+rsiLen    = input.int(14,   "RSI length", minval = 2)
+rsiMax    = input.float(70, "RSI overbought")
+atrLen    = input.int(14,   "ATR length", minval = 2)
+stopMult  = input.float(2.0, "Stop x ATR")
+riskPct   = input.float(0.01, "Risk per trade", step = 0.005)
+maxPosPct = input.float(0.25, "Max notional per position")
+acctEq    = input.float(100000, "Paper account equity")
+
+// USD -> EUR. request.security must sit at global scope, so it is resolved
+// once per bar and reused by every alert and table cell below.
+eurusd = request.security("FX_IDC:EURUSD", "D", close, ignore_invalid_symbol = true)
+usdEur = na(eurusd) or eurusd <= 0 ? na : 1.0 / eurusd
+
+// Sign is applied explicitly rather than through a format string, because
+// str.tostring() will not render a leading + and an unsigned P&L is ambiguous
+// exactly when it matters most.
+fmtSigned(v, pre) =>
+    (v >= 0 ? "+" : "-") + pre + str.tostring(math.abs(v), "#,###.##")
+
+// One P&L, three currencies. EUR degrades to "n/a" rather than to zero.
+money(usd, pct) =>
+    base = fmtSigned(pct, "") + "% | " + fmtSigned(usd, "$")
+    na(usdEur) ? base + " | EUR n/a" : base + " | " + fmtSigned(usd * usdEur, "EUR ")
+
+fast = ta.sma(close, fastLen)
+slow = ta.sma(close, slowLen)
+r    = ta.rsi(close, rsiLen)
+a    = ta.atr(atrLen)
+
+plot(fast, "SMA fast", color = color.aqua)
+plot(slow, "SMA slow", color = color.orange)
+
+longSig = ta.crossover(fast, slow) and r < rsiMax
+flatSig = ta.crossunder(fast, slow)
+
+// risk.py sizing, computed on the chart so the alert can carry it.
+riskPerShare = stopMult * a
+qtyRisk = riskPerShare > 0 ? math.floor(acctEq * riskPct / riskPerShare) : 0
+qtyCap  = math.floor(acctEq * maxPosPct / close)
+qty     = math.max(0, math.min(qtyRisk, qtyCap))
+stopLvl = close - stopMult * a
+
+if longSig and strategy.position_size == 0 and qty > 0
+    strategy.entry("L", strategy.long, qty = qty)
+
+var float trailStop = na
+var float bestPx    = na
+var bool  beOn      = false
+
+if strategy.position_size > 0 and strategy.position_size[1] == 0
+    trailStop := strategy.position_avg_price - stopMult * a
+    bestPx    := close
+    beOn      := false
+
+if strategy.position_size > 0 and useTrail
+    bestPx := math.max(nz(bestPx, close), close)
+    if not beOn and (bestPx - strategy.position_avg_price) >= a
+        beOn := true
+        trailStop := math.max(nz(trailStop), strategy.position_avg_price)
+    if beOn
+        trailStop := math.max(nz(trailStop), bestPx - stopMult * a)
+
+if strategy.position_size > 0
+    strategy.exit("X", "L", stop = trailStop)
+
+if flatSig and strategy.position_size > 0
+    strategy.close("L")
+
+// Open P&L on the current position, guarded against a zero cost basis.
+costBasis = strategy.position_avg_price * math.abs(strategy.position_size)
+openPct   = costBasis > 0 ? strategy.openprofit / costBasis * 100 : 0.0
+
+// -- alerts: everything needed to place the paper trade ---------------------
+if longSig and strategy.position_size == 0 and qty > 0
+    alert("PAPER BUY " + syminfo.ticker +
+          " | entry ~" + str.tostring(close, "#.##") +
+          " | STOP " + str.tostring(stopLvl, "#.##") +
+          " | qty " + str.tostring(qty, "#") +
+          " | risk " + str.tostring(qty * riskPerShare, "#.##") +
+          " (" + str.tostring(riskPct * 100, "#.#") + "% of " +
+          str.tostring(acctEq, "#,###") + ")",
+          alert.freq_once_per_bar_close)
+
+// Signal to exit. P&L here is still OPEN - the fill happens next bar - so it
+// is labelled as such. Reporting it as realised would be a lie by one bar.
+if flatSig and strategy.position_size > 0
+    alert("PAPER SELL " + syminfo.ticker +
+          " | exit ~" + str.tostring(close, "#.##") +
+          " | OPEN P&L " + money(strategy.openprofit, openPct) +
+          " | reason: fast SMA crossed below slow",
+          alert.freq_once_per_bar_close)
+
+// Realised result. This fires for EVERY exit including the trailing stop,
+// which strategy.exit() alone never announced - stop-outs used to be silent,
+// which is the one exit you most want to hear about.
+justClosed = strategy.position_size == 0 and strategy.position_size[1] > 0
+if justClosed and strategy.closedtrades > 0
+    ci      = strategy.closedtrades - 1
+    pnlUsd  = strategy.closedtrades.profit(ci)
+    entryPx = strategy.closedtrades.entry_price(ci)
+    exitPx  = strategy.closedtrades.exit_price(ci)
+    pnlPct  = entryPx > 0 ? (exitPx - entryPx) / entryPx * 100 : 0.0
+    alert((pnlUsd >= 0 ? "PROFIT" : "LOSS") + " " + syminfo.ticker + " CLOSED" +
+          " | " + money(pnlUsd, pnlPct) +
+          " | entry " + str.tostring(entryPx, "#.##") +
+          " -> exit " + str.tostring(exitPx, "#.##") +
+          " | NET total " + money(strategy.netprofit,
+               strategy.initial_capital > 0 ?
+               strategy.netprofit / strategy.initial_capital * 100 : 0.0),
+          alert.freq_once_per_bar_close)
+
+// -- on-chart card: what to do right now ------------------------------------
+var table t = table.new(position.bottom_right, 2, 9, border_width = 1)
+if barstate.islastconfirmedhistory
+    inPos = strategy.position_size > 0
+    table.cell(t, 0, 0, "PAPER TRADE CARD", bgcolor = color.new(color.gray, 60), text_color = color.white)
+    table.cell(t, 1, 0, syminfo.ticker,     bgcolor = color.new(color.gray, 60), text_color = color.white)
+    table.cell(t, 0, 1, "State", text_color = color.silver)
+    table.cell(t, 1, 1, inPos ? "IN POSITION" : "flat",
+         text_color = inPos ? color.lime : color.silver)
+    table.cell(t, 0, 2, "Trend", text_color = color.silver)
+    table.cell(t, 1, 2, fast > slow ? "fast > slow" : "fast < slow",
+         text_color = fast > slow ? color.lime : color.red)
+    table.cell(t, 0, 3, "RSI(" + str.tostring(rsiLen) + ")", text_color = color.silver)
+    table.cell(t, 1, 3, str.tostring(r, "#.#") + (r < rsiMax ? " ok" : " blocked"),
+         text_color = r < rsiMax ? color.lime : color.red)
+    table.cell(t, 0, 4, inPos ? "Trailing stop" : "Stop if entered", text_color = color.silver)
+    table.cell(t, 1, 4, str.tostring(inPos ? trailStop : stopLvl, "#.##"), text_color = color.white)
+    table.cell(t, 0, 5, "Size @1% risk", text_color = color.silver)
+    table.cell(t, 1, 5, str.tostring(qty, "#") + " sh", text_color = color.white)
+    table.cell(t, 0, 6, "Capital at risk", text_color = color.silver)
+    table.cell(t, 1, 6, str.tostring(qty * riskPerShare, "#,###"), text_color = color.yellow)
+    // P&L rows: open only means anything while a position exists.
+    table.cell(t, 0, 7, "Open P&L", text_color = color.silver)
+    table.cell(t, 1, 7, inPos ? money(strategy.openprofit, openPct) : "-",
+         text_color = not inPos ? color.silver : strategy.openprofit >= 0 ? color.lime : color.red)
+    table.cell(t, 0, 8, "NET P&L", text_color = color.silver)
+    table.cell(t, 1, 8, money(strategy.netprofit,
+         strategy.initial_capital > 0 ? strategy.netprofit / strategy.initial_capital * 100 : 0.0),
+         text_color = strategy.netprofit >= 0 ? color.lime : color.red)
