@@ -1,0 +1,155 @@
+//@version=6
+// VTL multi-symbol scanner - ONE alert for the whole watchlist.
+//
+// Why this exists: TradingView alerts are per-symbol, and the VTL strategy only
+// ever sees the chart it is attached to. Covering eight symbols that way needs
+// eight alerts, eight dialogs, and eight things to maintain - and it burns eight
+// slots against the account's alert limit.
+//
+// This watches all eight from a single chart via request.security(), so ONE
+// alert covers the lot. Attach it to any chart, create one alert on it with
+// condition "Any alert() function call", and it reports for every symbol.
+//
+// It is an indicator, not a strategy, so it has no strategy.* position state.
+// Positions are therefore tracked explicitly in arrays below - which is also
+// why the P&L here is a clean mark-to-market on the tracked entry, with no
+// broker fills involved. It mirrors the strategy's logic; it does not replace
+// its backtest.
+//
+// P&L is reported three ways - percent, USD and EUR - matching
+// vtl_session_strategy.pine. EUR degrades to "n/a" rather than to zero when the
+// FX feed is unavailable.
+indicator("VTL multi-symbol scanner", overlay = false)
+
+fastLen  = input.int(20,  "Fast SMA", minval = 2)
+slowLen  = input.int(50,  "Slow SMA", minval = 3)
+rsiLen   = input.int(14,  "RSI length", minval = 2)
+rsiMax   = input.float(70, "RSI overbought")
+atrLen   = input.int(14,  "ATR length", minval = 2)
+stopMult = input.float(2.0, "Stop x ATR")
+riskPct  = input.float(0.01, "Risk per trade", step = 0.005)
+acctEq   = input.float(100000, "Equity per symbol")
+
+// USD -> EUR, resolved once at global scope and reused everywhere below.
+eurusd = request.security("FX_IDC:EURUSD", "D", close, ignore_invalid_symbol = true)
+usdEur = na(eurusd) or eurusd <= 0 ? na : 1.0 / eurusd
+
+fmtSigned(v, pre) =>
+    (v >= 0 ? "+" : "-") + pre + str.tostring(math.abs(v), "#,###.##")
+
+money(usd, pct) =>
+    base = fmtSigned(pct, "") + "% | " + fmtSigned(usd, "$")
+    na(usdEur) ? base + " | EUR n/a" : base + " | " + fmtSigned(usd * usdEur, "EUR ")
+
+// One evaluation, run in each symbol's own context so nothing repaints across
+// symbols. Returns everything the scanner needs from that market.
+probe() =>
+    f = ta.sma(close, fastLen)
+    s = ta.sma(close, slowLen)
+    r = ta.rsi(close, rsiLen)
+    a = ta.atr(atrLen)
+    [close, f, s, r, a, ta.crossover(f, s), ta.crossunder(f, s)]
+
+// request.security needs a simple string, so the universe cannot be looped -
+// these eight calls are explicit by necessity, not by preference.
+[c0, f0, s0, r0, a0, xo0, xu0] = request.security("NASDAQ:AAPL",  "D", probe())
+[c1, f1, s1, r1, a1, xo1, xu1] = request.security("NASDAQ:MSFT",  "D", probe())
+[c2, f2, s2, r2, a2, xo2, xu2] = request.security("NASDAQ:NVDA",  "D", probe())
+[c3, f3, s3, r3, a3, xo3, xu3] = request.security("AMEX:SPY",     "D", probe())
+[c4, f4, s4, r4, a4, xo4, xu4] = request.security("NASDAQ:TSLA",  "D", probe())
+[c5, f5, s5, r5, a5, xo5, xu5] = request.security("NASDAQ:AMZN",  "D", probe())
+[c6, f6, s6, r6, a6, xo6, xu6] = request.security("NASDAQ:META",  "D", probe())
+[c7, f7, s7, r7, a7, xo7, xu7] = request.security("NASDAQ:GOOGL", "D", probe())
+
+var string[] SYM = array.from("AAPL", "MSFT", "NVDA", "SPY", "TSLA", "AMZN", "META", "GOOGL")
+
+// Tracked position state. An indicator has no strategy engine, so this is the
+// book: entry price, share count and the resting stop, per symbol.
+var float[] entryPx = array.new_float(8, na)
+var float[] qtyArr  = array.new_float(8, 0.0)
+var float[] stopArr = array.new_float(8, na)
+
+// Evaluate one symbol: open it, close it, or leave it alone - and alert on any
+// transition. Returns the row text for the table.
+step(i, px, fastV, slowV, rsiV, atrV, xover, xunder) =>
+    sym    = array.get(SYM, i)
+    inPos  = not na(array.get(entryPx, i))
+    stopLv = array.get(stopArr, i)
+    out    = ""
+
+    if not inPos and xover and rsiV < rsiMax and atrV > 0
+        rps = stopMult * atrV
+        q   = rps > 0 ? math.floor(acctEq * riskPct / rps) : 0
+        if q > 0
+            array.set(entryPx, i, px)
+            array.set(qtyArr,  i, q)
+            array.set(stopArr, i, px - rps)
+            alert("PAPER BUY " + sym +
+                  " | entry ~" + str.tostring(px, "#.##") +
+                  " | STOP " + str.tostring(px - rps, "#.##") +
+                  " | qty " + str.tostring(q, "#") +
+                  " | risk " + str.tostring(q * rps, "#.##"),
+                  alert.freq_once_per_bar_close)
+
+    // Re-read: the block above may have just opened this symbol.
+    inPos := not na(array.get(entryPx, i))
+    if inPos
+        ep  = array.get(entryPx, i)
+        q   = array.get(qtyArr, i)
+        pnl = (px - ep) * q
+        pct = ep > 0 ? (px - ep) / ep * 100 : 0.0
+
+        // Stop first: if both the stop and the cross trigger on the same bar,
+        // the stop is the one that would actually have filled.
+        hitStop = not na(stopLv) and px <= stopLv
+        if hitStop or xunder
+            alert((pnl >= 0 ? "PROFIT" : "LOSS") + " " + sym + " CLOSED" +
+                  " | " + money(pnl, pct) +
+                  " | entry " + str.tostring(ep, "#.##") +
+                  " -> exit " + str.tostring(px, "#.##") +
+                  " | reason: " + (hitStop ? "STOP" : "SMA cross down"),
+                  alert.freq_once_per_bar_close)
+            array.set(entryPx, i, na)
+            array.set(qtyArr,  i, 0.0)
+            array.set(stopArr, i, na)
+            out := "closed " + money(pnl, pct)
+        else
+            // Trail the stop up only; never widen it.
+            array.set(stopArr, i, math.max(nz(stopLv, px - stopMult * atrV),
+                                           px - stopMult * atrV))
+            out := "OPEN " + money(pnl, pct)
+    else
+        out := fastV > slowV ? (rsiV < rsiMax ? "armed" : "RSI blocked") : "flat"
+    out
+
+st0 = step(0, c0, f0, s0, r0, a0, xo0, xu0)
+st1 = step(1, c1, f1, s1, r1, a1, xo1, xu1)
+st2 = step(2, c2, f2, s2, r2, a2, xo2, xu2)
+st3 = step(3, c3, f3, s3, r3, a3, xo3, xu3)
+st4 = step(4, c4, f4, s4, r4, a4, xo4, xu4)
+st5 = step(5, c5, f5, s5, r5, a5, xo5, xu5)
+st6 = step(6, c6, f6, s6, r6, a6, xo6, xu6)
+st7 = step(7, c7, f7, s7, r7, a7, xo7, xu7)
+
+// ── the whole watchlist on one screen ──────────────────────────────────────
+var table t = table.new(position.top_right, 3, 9, border_width = 1)
+paint(i, sym, px, txt) =>
+    col = str.startswith(txt, "OPEN +") or str.startswith(txt, "closed +") ? color.lime :
+          str.startswith(txt, "OPEN -") or str.startswith(txt, "closed -") ? color.red :
+          txt == "armed" ? color.yellow : color.silver
+    table.cell(t, 0, i + 1, sym, text_color = color.white)
+    table.cell(t, 1, i + 1, str.tostring(px, "#.##"), text_color = color.silver)
+    table.cell(t, 2, i + 1, txt, text_color = col)
+
+if barstate.islast
+    table.cell(t, 0, 0, "VTL SCANNER", bgcolor = color.new(color.gray, 60), text_color = color.white)
+    table.cell(t, 1, 0, "last",        bgcolor = color.new(color.gray, 60), text_color = color.white)
+    table.cell(t, 2, 0, "state / P&L", bgcolor = color.new(color.gray, 60), text_color = color.white)
+    paint(0, "AAPL",  c0, st0)
+    paint(1, "MSFT",  c1, st1)
+    paint(2, "NVDA",  c2, st2)
+    paint(3, "SPY",   c3, st3)
+    paint(4, "TSLA",  c4, st4)
+    paint(5, "AMZN",  c5, st5)
+    paint(6, "META",  c6, st6)
+    paint(7, "GOOGL", c7, st7)

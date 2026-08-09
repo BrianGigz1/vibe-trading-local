@@ -13,13 +13,14 @@ source as a zero. A dashboard that makes things look healthy is worse than none.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sqlite3
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 import status as gate
 from collector import connect_ro, init_db, stats
@@ -64,6 +65,70 @@ def api_state() -> JSONResponse:
         return _build_state(con)
     finally:
         con.close()
+
+
+def _change_token(con: sqlite3.Connection) -> str:
+    """Cheap fingerprint of everything the page cares about.
+
+    Counting rows is far cheaper than assembling the payload, so the watcher can
+    check often and only wake the browser when something actually moved.
+    """
+    parts = []
+    for table, col in (("live_ticks", "id"), ("trades", "id"), ("runs", "id")):
+        try:
+            parts.append(str(con.execute(
+                f"SELECT COALESCE(MAX({col}),0), COUNT(*) FROM {table}").fetchone()))
+        except sqlite3.Error:
+            parts.append("-")          # table absent is a state, not an error
+    return "|".join(parts)
+
+
+@app.get("/events")
+async def events() -> StreamingResponse:
+    """Server-sent events: push on change instead of polling on a timer.
+
+    The page previously re-fetched the whole payload every 5s whether or not
+    anything had changed. That is what made a *read* dashboard contend with the
+    18:00 collector write in the first place. Here the server checks a cheap
+    row-count token, and only serialises and pushes when it moves — so N open
+    tabs cost one check, not N.
+
+    Heartbeat comments keep the connection alive through anything that times out
+    idle sockets. EventSource reconnects on its own, so a dropped stream
+    self-heals without page logic.
+    """
+    async def stream():
+        last_token = None
+        beat = 0
+        while True:
+            try:
+                con = connect_ro()
+            except sqlite3.Error:
+                init_db().close()
+                con = connect_ro()
+            try:
+                token = _change_token(con)
+                if token != last_token:
+                    payload = _build_state(con).body.decode("utf-8")
+                    last_token = token
+                    # Named so the client can bind per-event, as in
+                    #   source.addEventListener('state', handler, false)
+                    yield f"event: state\ndata: {payload}\n\n"
+                    beat = 0
+            finally:
+                con.close()
+
+            beat += 1
+            if beat >= 5:              # ~15s of quiet
+                yield ": keepalive\n\n"
+                beat = 0
+            await asyncio.sleep(3)
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",     # defeat proxy buffering, which stalls SSE
+    })
 
 
 def _build_state(con: sqlite3.Connection) -> JSONResponse:
