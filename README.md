@@ -1,5 +1,6 @@
 # vibe-trading-local
-n[![tests](https://github.com/BrianGigz1/vibe-trading-local/actions/workflows/tests.yml/badge.svg)](https://github.com/BrianGigz1/vibe-trading-local/actions/workflows/tests.yml)
+
+[![tests](https://github.com/BrianGigz1/vibe-trading-local/actions/workflows/tests.yml/badge.svg)](https://github.com/BrianGigz1/vibe-trading-local/actions/workflows/tests.yml)
 
 A local, measurement-first research and **paper-trading** stack for equities and crypto, written in Python.
 
